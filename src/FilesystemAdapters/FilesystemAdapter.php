@@ -11,6 +11,24 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class FilesystemAdapter extends BaseFilesystemAdapter
 {
+    /**
+       * Get the mime-type of a given file.
+       *
+       * @param  string  $path
+       * @return string|false
+       */
+      public function mimeType($path, $name = null)
+      {
+        if (!empty($name)) {
+          $mimetype = Util\MimeType::detectByFilename($name);
+      }
+      if (empty($mimetype)) {
+        $mimetype = parent::mimeType($path);
+      }
+      return $mimetype;
+    }
+
+    
     /** @inheritdoc  */
     public function response($path, $name = null, array $headers = [], $disposition = 'inline')
     {
@@ -23,7 +41,7 @@ class FilesystemAdapter extends BaseFilesystemAdapter
         );
 
         $response->headers->replace($headers + [
-                'Content-Type' => $this->mimeType($path),
+                'Content-Type' => $this->mimeType($path, $filename),
                 'Content-Disposition' => $disposition,
             ]);
 
