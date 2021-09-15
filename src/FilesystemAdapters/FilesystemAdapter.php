@@ -3,6 +3,7 @@
 namespace SmaatCoda\EncryptedFilesystem\FilesystemAdapters;
 
 use Illuminate\Filesystem\FilesystemAdapter as BaseFilesystemAdapter;
+use League\Flysystem\Util;
 use Psr\Http\Message\StreamInterface;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
