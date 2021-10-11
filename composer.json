@@ -3,9 +3,9 @@
   "description": "Encrypted Filesystem allows easy file and/or stream encryption and provides integration with Laravel's Filesystem.",
   "type": "library",
   "require": {
-    "php": ">=7.3",
+    "php": ">=7.3|^8.0",
     "guzzlehttp/psr7": "^1.7|^2.0",
-    "ext-openssl": "^7.3"
+    "ext-openssl": "^7.3|^8.0"
   },
   "autoload": {
     "psr-4": {
