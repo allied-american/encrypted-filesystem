@@ -55,7 +55,7 @@ class DecryptingStreamDecorator implements StreamInterface
         if ($whence === SEEK_SET) {
             $this->plaintextBuffer = '';
 
-            $wholeBlockOffset = $this->encryptor->getBlockSize() * ceil($offset / $this->encryptor->getBlockSize());
+            $wholeBlockOffset = (int)($this->encryptor->getBlockSize() * ceil($offset / $this->encryptor->getBlockSize()));
             $this->encryptor->seek($wholeBlockOffset, $whence);
             $this->stream->seek($wholeBlockOffset, $whence);
             $this->read($offset - $wholeBlockOffset);
