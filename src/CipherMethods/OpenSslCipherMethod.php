@@ -222,7 +222,7 @@ class OpenSslCipherMethod implements CipherMethodInterface, RequiresIvContract, 
      */
     public function seek(int $offset, string $whence = SEEK_SET)
     {
-        if ($offset === 0 && $whence === SEEK_SET) {
+        if ($offset === 0 && (int)$whence === SEEK_SET) {
             $this->iv = null;
         } else {
             throw new LogicException('Only rewinding is supported');
