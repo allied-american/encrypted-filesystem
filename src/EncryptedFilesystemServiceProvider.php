@@ -4,7 +4,7 @@ namespace SmaatCoda\EncryptedFilesystem;
 
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Support\ServiceProvider;
-use League\Flysystem\Filesystem as Flysystem;
+use League\Flysystem\Filesystem;
 use SmaatCoda\EncryptedFilesystem\CipherMethods\CipherMethodFactory;
 use SmaatCoda\EncryptedFilesystem\Exceptions\InvalidConfiguration;
 use SmaatCoda\EncryptedFilesystem\FilesystemAdapters\EncryptedLocalAdapter;
@@ -18,15 +18,17 @@ class EncryptedFilesystemServiceProvider extends ServiceProvider
             $this->validateConfiguration($config);
             $cipherMethod = CipherMethodFactory::make($config);
 
-            $permissions = $config['permissions'] ?? [];
-
             $links = ($config['links'] ?? null) === 'skip'
                 ? EncryptedLocalAdapter::SKIP_LINKS
                 : EncryptedLocalAdapter::DISALLOW_LINKS;
 
-            $adapter = new EncryptedLocalAdapter($cipherMethod, $config['root'], $config['lock'] ?? LOCK_EX, $links, $permissions);
+            $adapter = new EncryptedLocalAdapter($cipherMethod, $config['root'], $config['lock'] ?? LOCK_EX, $links);
 
-            return new FilesystemAdapter(new Flysystem($adapter, count($config) > 0 ? $config : null));
+            return new FilesystemAdapter(
+              new Filesystem($adapter, $config),
+              $adapter,
+              $config
+            );
         });
     }
 

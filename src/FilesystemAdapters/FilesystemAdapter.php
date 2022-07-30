@@ -3,33 +3,35 @@
 namespace SmaatCoda\EncryptedFilesystem\FilesystemAdapters;
 
 use Illuminate\Filesystem\FilesystemAdapter as BaseFilesystemAdapter;
-use League\Flysystem\Util;
+use League\Flysystem\Local\FallbackMimeTypeDetector;
+use League\MimeTypeDetection\ExtensionMimeTypeDetector;
 use Psr\Http\Message\StreamInterface;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * @mixin \League\Flysystem\FilesystemInterface
+ * @mixin \League\Flysystem\FilesystemOperator
  */
 class FilesystemAdapter extends BaseFilesystemAdapter
 {
     /**
-       * Get the mime-type of a given file.
-       *
-       * @param  string  $path
-       * @return string|false
-       */
-      public function mimeType($path, $name = null)
-      {
+     * Get the mime-type of a given file.
+     *
+     * @param  string  $path
+     * @return string|false
+     */
+    public function mimeType($path, $name = null)
+    {
         if (!empty($name)) {
-          $mimetype = Util\MimeType::detectByFilename($name);
-      }
-      if (empty($mimetype)) {
-        $mimetype = parent::mimeType($path);
-      }
-      return $mimetype;
+            $mimeTypeDetector = new FallbackMimeTypeDetector(new ExtensionMimeTypeDetector());
+            $mimetype = $mimeTypeDetector->detectMimeTypeFromPath($name);
+        }
+        if (empty($mimetype)) {
+            $mimetype = parent::mimeType($path);
+        }
+        return $mimetype;
     }
 
-    
+
     /** @inheritdoc  */
     public function response($path, $name = null, array $headers = [], $disposition = 'inline')
     {
@@ -42,9 +44,9 @@ class FilesystemAdapter extends BaseFilesystemAdapter
         );
 
         $response->headers->replace($headers + [
-                'Content-Type' => $this->mimeType($path, $filename),
-                'Content-Disposition' => $disposition,
-            ]);
+            'Content-Type' => $this->mimeType($path, $filename),
+            'Content-Disposition' => $disposition,
+        ]);
 
         $response->setCallback(function () use ($path) {
             /** @var resource|StreamInterface $stream */
@@ -56,7 +58,6 @@ class FilesystemAdapter extends BaseFilesystemAdapter
                 while (!$stream->eof()) {
                     echo $stream->read(16);
                 }
-
                 $stream->close();
             }
         });

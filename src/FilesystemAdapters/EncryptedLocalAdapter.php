@@ -3,18 +3,42 @@
 namespace SmaatCoda\EncryptedFilesystem\FilesystemAdapters;
 
 use GuzzleHttp\Psr7\Stream;
-use League\Flysystem\Adapter\Local;
+use League\Flysystem\FileAttributes;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use League\Flysystem\Config;
+use League\Flysystem\PathPrefixer;
+use League\Flysystem\UnixVisibility\PortableVisibilityConverter;
+use League\Flysystem\UnixVisibility\VisibilityConverter;
 use SmaatCoda\EncryptedFilesystem\EncryptionStreams\DecryptingStreamDecorator;
 use SmaatCoda\EncryptedFilesystem\EncryptionStreams\EncryptingStreamDecorator;
 use SmaatCoda\EncryptedFilesystem\Interfaces\CipherMethodInterface;
 
-class EncryptedLocalAdapter extends Local
+class EncryptedLocalAdapter extends LocalFilesystemAdapter
 {
     /**
      * This extension is appended to encrypted files and will be checked for before decryption
      */
     const FILENAME_POSTFIX = '.enc';
+
+    /**
+     * @var PathPrefixer
+     */
+    private $prefixer;
+
+    /**
+     * @var VisibilityConverter
+     */
+    private $visibility;
+
+    /**
+     * @var string
+     */
+    private $rootLocation;
+
+    /**
+     * @var bool
+     */
+    private $rootLocationIsSetup = false;
 
     /**
      * @var CipherMethodInterface
@@ -23,97 +47,83 @@ class EncryptedLocalAdapter extends Local
 
     /**
      * EncryptedFilesystemAdapter constructor.
-     * @param CipherMethodInterface $cipherMethod
-     * @param $root
-     * @param int $writeFlags
-     * @param int $linkHandling
-     * @param array $permissions
+     * @param  CipherMethodInterface  $cipherMethod
+     * @param  string  $location
+     * @param  int  $writeFlags
+     * @param  int  $linkHandling
      */
-    public function __construct(CipherMethodInterface $cipherMethod, $root, $writeFlags = LOCK_EX, $linkHandling = self::DISALLOW_LINKS, array $permissions = [])
-    {
+    public function __construct(
+        CipherMethodInterface $cipherMethod,
+        string $location,
+        int $writeFlags = LOCK_EX,
+        int $linkHandling = self::DISALLOW_LINKS
+    ) {
         $this->cipherMethod = $cipherMethod;
+        $this->prefixer = new PathPrefixer($location, DIRECTORY_SEPARATOR);
+        $this->visibility = new PortableVisibilityConverter();
+        $this->rootLocation = $location;
+        $this->ensureRootDirectoryExists();
 
-        parent::__construct($root, $writeFlags, $linkHandling, $permissions);
+        parent::__construct($location, $this->visibility, $writeFlags, $linkHandling);
     }
 
     /** @inheritdoc */
-    public function has($path)
+    public function fileExists(string $location): bool
     {
-        return parent::has($this->attachEncryptionMarkers($path));
+        return parent::fileExists($this->attachEncryptionMarkers($location));
+    }
+
+    /**
+     * For compatibility with Illuminate\Filesystem\FilesystemAdapter::exists.
+     */
+    public function has($path): bool
+    {
+        return $this->fileExists($this->attachEncryptionMarkers($path)) || $this->directoryExists($path);
     }
 
     /** @inheritdoc */
-    public function write($path, $contents, Config $config)
+    public function write(string $path, string $contents, Config $config): void
     {
-        $location = $this->attachEncryptionMarkers($this->applyPathPrefix($path));
-        $this->ensureDirectory(dirname($location));
-
-        // This driver works exclusively with streams, so transform the contents into a stream
+        // This driver works exclusively with streams, so transform the contents into a stream.
         $stream = fopen('php://memory', 'r+');
         fwrite($stream, $contents);
         rewind($stream);
 
-        $result = $this->writeStream($path, $stream, $config);
-        $result['contents'] = $contents;
-
-        if ($visibility = $config->get('visibility')) {
-            $result['visibility'] = $visibility;
-            $this->setVisibility($path, $visibility);
-        }
-
-        return $result;
+        $this->writeStream($path, $stream, $config);
     }
 
     /** @inheritdoc */
-    public function writeStream($path, $resource, Config $config)
+    public function writeStream(string $path, $contents, Config $config): void
     {
-        $location = $this->attachEncryptionMarkers($this->applyPathPrefix($path));
-        $this->ensureDirectory(dirname($location));
+        $location = $this->attachEncryptionMarkers($path);
+        $prefixedLocation = $this->prefixer->prefixPath($location);
+        $this->ensureRootDirectoryExists();
+        $this->ensureDirectoryExists(
+            dirname($prefixedLocation),
+            $this->resolveDirectoryVisibility($config->get(Config::OPTION_DIRECTORY_VISIBILITY))
+        );
+        error_clear_last();
+
         $this->cipherMethod->reset();
 
-        $stream = new Stream($resource);
+        $stream = new Stream($contents);
         $encryptedStream = new EncryptingStreamDecorator($stream, $this->cipherMethod);
-        $outputStream = new Stream(fopen($location, 'wb'));
+        $outputStream = new Stream(fopen($prefixedLocation, 'wb'));
 
         while (!$encryptedStream->eof()) {
             $outputStream->write($encryptedStream->read($this->cipherMethod->getBlockSize()));
         }
 
-        $type = 'file';
-        $size = $encryptedStream->getSize();
-
-        $result = compact('type', 'path', 'size');
-
-        if ($visibility = $config->get('visibility')) {
-            $this->setVisibility($path, $visibility);
-            $result['visibility'] = $visibility;
+        if ($visibility = $config->get(Config::OPTION_VISIBILITY)) {
+            $this->setVisibility($path, (string) $visibility);
         }
-
-        return $result;
     }
 
     /** @inheritdoc */
-    public function readStream($path)
+    public function read(string $path): string
     {
-        $location = $this->attachEncryptionMarkers($this->applyPathPrefix($path));
-        $this->cipherMethod->reset();
-
-        $stream = new Stream(fopen($location, 'rb'));
-        $decryptedStream = new DecryptingStreamDecorator($stream, $this->cipherMethod);
-
-        return ['type' => 'file', 'path' => $path, 'stream' => $decryptedStream];
-    }
-
-    /** @inheritdoc */
-    public function update($path, $contents, Config $config)
-    {
-        return $this->write($path, $contents, $config);
-    }
-
-    /** @inheritdoc */
-    public function read($path)
-    {
-        $location = $this->attachEncryptionMarkers($this->applyPathPrefix($path));
+        // @todo Make sure the method is FS3 compatible.
+        $location = $this->attachEncryptionMarkers($this->prefixer->prefixPath($path));
         $this->cipherMethod->reset();
 
         $stream = new Stream(fopen($location, 'rb'));
@@ -125,92 +135,105 @@ class EncryptedLocalAdapter extends Local
         }
 
         if ($contents === false) {
-            return false;
+            return '';
         }
 
-        return ['type' => 'file', 'path' => $path, 'contents' => $contents];
+        return $contents;
     }
 
     /** @inheritdoc */
-    public function rename($path, $newpath)
+    public function readStream($path)
     {
-        if (!is_dir($path)) {
-            $path = $this->attachEncryptionMarkers($path);
-            $newpath = $this->attachEncryptionMarkers($newpath);
+        // @todo Make sure the method is FS3 compatible.
+        $location = $this->attachEncryptionMarkers($this->prefixer->prefixPath($path));
+        $this->cipherMethod->reset();
+
+        $stream = new Stream(fopen($location, 'rb'));
+        return new DecryptingStreamDecorator($stream, $this->cipherMethod);
+    }
+
+    /** @inheritdoc */
+    public function move(string $source, string $destination, Config $config): void
+    {
+        if (!is_dir($source)) {
+            $source = $this->attachEncryptionMarkers($source);
+            $destination = $this->attachEncryptionMarkers($destination);
         }
 
-        return parent::rename($path, $newpath);
+        parent::move($source, $destination, $config);
     }
 
     /** @inheritdoc */
-    public function copy($path, $newpath)
+    public function copy(string $source, string $destination, Config $config): void
     {
-        if (!is_dir($path)) {
-            $path = $this->attachEncryptionMarkers($path);
-            $newpath = $this->attachEncryptionMarkers($newpath);
+        if (!is_dir($source)) {
+            $source = $this->attachEncryptionMarkers($source);
+            $destination = $this->attachEncryptionMarkers($destination);
         }
 
-        return parent::copy($path, $newpath);
+        parent::copy($source, $destination, $config);
     }
 
     /** @inheritdoc */
-    public function delete($path)
-    {
-        if (!is_dir($path)) {
-            $path = $this->attachEncryptionMarkers($path);
-        }
-
-        return parent::delete($path);
-    }
-
-    /** @inheritdoc */
-    public function getMetadata($path)
-    {
-        $path = $this->attachEncryptionMarkers($path);
-
-        return parent::getMetadata($path);
-    }
-
-    /** @inheritdoc */
-    public function getSize($path)
-    {
-        return parent::getSize($path);
-    }
-
-    /** @inheritdoc */
-    public function getMimetype($path)
-    {
-        $path = $this->attachEncryptionMarkers($path);
-
-        return parent::getMimetype($path);
-    }
-
-    /** @inheritdoc */
-    public function getTimestamp($path)
-    {
-        $path = $this->attachEncryptionMarkers($path);
-
-        return parent::getTimestamp($path);
-    }
-
-    /** @inheritdoc */
-    public function getVisibility($path)
+    public function delete(string $path): void
     {
         if (!is_dir($path)) {
             $path = $this->attachEncryptionMarkers($path);
         }
 
-        return parent::getVisibility($path);
+        parent::delete($path);
     }
 
     /** @inheritdoc */
-    public function setVisibility($path, $visibility)
+    public function fileSize(string $path): FileAttributes
+    {
+        // @todo Think how to handle it correctly.
+
+        if (!is_dir($path)) {
+            $path = $this->attachEncryptionMarkers($path);
+        }
+
+        return parent::fileSize($path);
+    }
+
+    /** @inheritdoc */
+    public function mimeType(string $path): FileAttributes
     {
         if (!is_dir($path)) {
             $path = $this->attachEncryptionMarkers($path);
         }
 
-        return parent::setVisibility($path, $visibility);
+        return parent::mimeType($path);
+    }
+
+    /** @inheritdoc */
+    public function lastModified(string $path): FileAttributes
+    {
+        if (!is_dir($path)) {
+            $path = $this->attachEncryptionMarkers($path);
+        }
+
+        return parent::lastModified($path);
+    }
+
+    /** @inheritdoc */
+    public function visibility(string $path): FileAttributes
+    {
+        if (!is_dir($path)) {
+            $path = $this->attachEncryptionMarkers($path);
+        }
+
+        return parent::visibility($path);
+    }
+
+    /** @inheritdoc */
+    public function setVisibility(string $path, string $visibility): void
+    {
+        if (!is_dir($path)) {
+            $path = $this->attachEncryptionMarkers($path);
+        }
+
+        parent::setVisibility($path, $visibility);
     }
 
     /**
@@ -230,4 +253,21 @@ class EncryptedLocalAdapter extends Local
     {
         return preg_replace('/(' . self::FILENAME_POSTFIX . ')$/', '', $sourceRealPath);
     }
+
+    private function ensureRootDirectoryExists(): void
+    {
+        if ($this->rootLocationIsSetup) {
+            return;
+        }
+
+        $this->ensureDirectoryExists($this->rootLocation, $this->visibility->defaultForDirectories());
+    }
+
+    private function resolveDirectoryVisibility(?string $visibility): int
+    {
+        return $visibility === null ? $this->visibility->defaultForDirectories() : $this->visibility->forDirectory(
+            $visibility
+        );
+    }
+
 }
