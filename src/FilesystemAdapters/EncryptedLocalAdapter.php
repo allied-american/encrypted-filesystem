@@ -219,7 +219,10 @@ class EncryptedLocalAdapter extends Local
      */
     protected function attachEncryptionMarkers($destPath)
     {
-        return $destPath . self::FILENAME_POSTFIX;
+        if (!str_ends_with($destPath, self::FILENAME_POSTFIX)) {
+            return $destPath . self::FILENAME_POSTFIX;
+        }
+        return $destPath;
     }
 
     /**
